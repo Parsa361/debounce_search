@@ -21,9 +21,13 @@ export function searchProducts(
       });
     }, delay);
 
-    signal?.addEventListener("abort", () => {
-      clearTimeout(timeoutId);
-      reject(new DOMException("Request aborted", "AbortError"));
-    });
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timeoutId);
+        reject(new DOMException("Request aborted", "AbortError"));
+      },
+      { once: true },
+    );
   });
 }
