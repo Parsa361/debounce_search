@@ -1,21 +1,26 @@
 <script setup lang="ts">
-import { watch } from "vue";
-import { useProductSearch } from "@/composables/useProductSearch";
 import Card from "./Card.vue";
+import { useProductSearch } from "@/composables/useProductSearch";
 
-const { query, state, hasResults, isLoading, search, clear, retry } =
-  useProductSearch({
-    debounceMs: 400,
-    cacheTtlMs: 30_000,
-    defaultLimit: 10,
-  });
-
-watch(query, (newQuery) => {
-  search({
-    query: newQuery,
-    limit: 10,
-  });
+const {
+  inputValue,
+  state,
+  hasResults,
+  isLoading,
+  scheduleSearch,
+  clear,
+  retry,
+} = useProductSearch({
+  debounceMs: 400,
+  cacheTtlMs: 30_000,
+  defaultLimit: 10,
 });
+
+function onInput(event: Event) {
+  const target = event.target as HTMLInputElement;
+  inputValue.value = target.value;
+  scheduleSearch();
+}
 </script>
 
 <template>
@@ -28,13 +33,19 @@ watch(query, (newQuery) => {
 
       <div class="search-box">
         <input
-          v-model="query"
+          :value="inputValue"
           type="text"
           placeholder="Search for products..."
           autocomplete="off"
+          @input="onInput"
         />
 
-        <button v-if="query" type="button" class="clear-button" @click="clear">
+        <button
+          v-if="inputValue"
+          type="button"
+          class="clear-button"
+          @click="clear"
+        >
           Clear
         </button>
       </div>
@@ -56,16 +67,8 @@ watch(query, (newQuery) => {
         Start typing to search products.
       </div>
 
-      <div v-else-if="state.status === 'loading'" class="state-message">
-        <div class="spinner"></div>
-        <span>Loading results...</span>
-      </div>
-
       <div v-else-if="state.status === 'error'" class="state-message error">
-        <p>
-          {{ state.errorMessage || "Something went wrong." }}
-        </p>
-
+        <p>{{ state.errorMessage || "Something went wrong." }}</p>
         <button type="button" @click="retry">Retry</button>
       </div>
 
@@ -74,17 +77,28 @@ watch(query, (newQuery) => {
         <strong>"{{ state.query }}"</strong>
       </div>
 
-      <div v-else-if="hasResults" class="results">
-        <div class="result-summary">
-          Found {{ state.total }} result(s) for
-          <strong>"{{ state.query }}"</strong>
+      <div v-else class="results-wrapper">
+        <div class="result-toolbar">
+          <div class="result-summary">
+            Found {{ state.total }} result(s) for
+            <strong>"{{ state.query }}"</strong>
+          </div>
+
+          <div v-if="isLoading" class="inline-loading">Updating results...</div>
         </div>
 
-        <Card
-          v-for="product in state.items"
-          :key="product.id"
-          :product="product"
-        />
+        <div v-if="hasResults" class="results">
+          <Card
+            v-for="product in state.items"
+            :key="product.id"
+            :product="product"
+          />
+        </div>
+
+        <div v-else-if="isLoading" class="state-message">
+          <div class="spinner"></div>
+          <span>Loading results...</span>
+        </div>
       </div>
     </div>
   </section>
@@ -209,15 +223,31 @@ watch(query, (newQuery) => {
   cursor: pointer;
 }
 
-.results {
+.results-wrapper {
   display: grid;
   gap: 12px;
 }
 
+.result-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
 .result-summary {
-  margin-bottom: 4px;
   color: #4b5563;
   font-size: 14px;
+}
+
+.inline-loading {
+  font-size: 13px;
+  color: #2563eb;
+}
+
+.results {
+  display: grid;
+  gap: 12px;
 }
 
 .spinner {

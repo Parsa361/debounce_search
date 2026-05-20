@@ -1,12 +1,12 @@
-import { ref, computed } from "vue";
-import type { Product } from "@/types/product";
+import { computed, onBeforeUnmount, ref } from "vue";
+import { searchProducts } from "@/services/api/searchApi";
+import { createInitialSearchState } from "@/types/search";
 import type {
   SearchParams,
   SearchState,
   CachedSearchEntry,
 } from "@/types/search";
-import { createInitialSearchState } from "@/types/search";
-import { searchProducts } from "@/services/api/searchApi";
+import type { Product } from "@/types/product";
 
 type UseProductSearchOptions = {
   debounceMs?: number;
@@ -14,45 +14,69 @@ type UseProductSearchOptions = {
   defaultLimit?: number;
 };
 
+function normalizeQuery(input: string): string {
+  return input.trim().toLowerCase();
+}
+
+function createCacheKey(params: SearchParams, fallbackLimit: number): string {
+  const normalizedQuery = normalizeQuery(params.query);
+  const limit = params.limit ?? fallbackLimit;
+  return `${normalizedQuery}::${limit}`;
+}
+
 export function useProductSearch(options: UseProductSearchOptions = {}) {
   const debounceMs = options.debounceMs ?? 400;
   const cacheTtlMs = options.cacheTtlMs ?? 30_000;
   const defaultLimit = options.defaultLimit ?? 10;
 
+  const inputValue = ref("");
   const state = ref<SearchState<Product>>(createInitialSearchState<Product>());
-  const query = ref("");
 
   const cache = new Map<string, CachedSearchEntry<Product>>();
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let currentController: AbortController | null = null;
-  let requestSeq = 0;
+  let activeRequestId = 0;
 
-  const hasResults = computed(() => state.value.items.length > 0);
   const isLoading = computed(() => state.value.status === "loading");
+  const hasResults = computed(() => state.value.items.length > 0);
+  const executedQuery = computed(() => state.value.query);
 
-  function normalizeQuery(input: string) {
-    return input.trim().toLowerCase();
-  }
-
-  function getCacheKey(params: SearchParams) {
-    const normalized = normalizeQuery(params.query);
-    return `${normalized}::${params.limit ?? defaultLimit}`;
-  }
-
-  function isCacheValid(entry: CachedSearchEntry<Product>) {
+  function isCacheFresh(entry: CachedSearchEntry<Product>): boolean {
     return Date.now() - entry.timestamp < cacheTtlMs;
   }
 
-  function applySuccess(
-    params: SearchParams,
+  function clearDebounceTimer() {
+    if (!debounceTimer) return;
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+
+  function abortActiveRequest() {
+    if (!currentController) return;
+    currentController.abort();
+    currentController = null;
+  }
+
+  function setLoadingState(query: string) {
+    state.value = {
+      ...state.value,
+      status: "loading",
+      query,
+      errorMessage: null,
+      fromCache: false,
+    };
+  }
+
+  function setSuccessState(
+    query: string,
     items: Product[],
     total: number,
     fromCache: boolean,
   ) {
     state.value = {
       status: items.length === 0 ? "empty" : "success",
-      query: params.query,
+      query,
       items,
       total,
       errorMessage: null,
@@ -60,11 +84,11 @@ export function useProductSearch(options: UseProductSearchOptions = {}) {
     };
   }
 
-  function applyError(params: SearchParams, message: string) {
+  function setErrorState(query: string, message: string) {
     state.value = {
       ...state.value,
       status: "error",
-      query: params.query,
+      query,
       errorMessage: message,
       fromCache: false,
     };
@@ -72,105 +96,113 @@ export function useProductSearch(options: UseProductSearchOptions = {}) {
 
   async function executeSearch(params: SearchParams) {
     const normalizedQuery = normalizeQuery(params.query);
+    const finalParams: SearchParams = {
+      query: normalizedQuery,
+      limit: params.limit ?? defaultLimit,
+    };
 
     if (!normalizedQuery) {
       state.value = createInitialSearchState<Product>();
       return;
     }
 
-    const cacheKey = getCacheKey(params);
-    const cached = cache.get(cacheKey);
+    const cacheKey = createCacheKey(finalParams, defaultLimit);
+    const cachedEntry = cache.get(cacheKey);
 
-    if (cached && isCacheValid(cached)) {
-      const { items, total } = cached.data;
-      applySuccess(params, items, total, true);
+    if (cachedEntry && isCacheFresh(cachedEntry)) {
+      setSuccessState(
+        params.query,
+        cachedEntry.data.items,
+        cachedEntry.data.total,
+        true,
+      );
       return;
     }
 
-    if (currentController) {
-      currentController.abort();
-    }
+    abortActiveRequest();
 
     const controller = new AbortController();
     currentController = controller;
-    const seq = ++requestSeq;
+    const requestId = ++activeRequestId;
 
-    state.value = {
-      ...state.value,
-      status: "loading",
-      query: params.query,
-      errorMessage: null,
-      fromCache: false,
-    };
+    setLoadingState(params.query);
 
     try {
-      const response = await searchProducts(
-        {
-          query: normalizedQuery,
-          limit: params.limit ?? defaultLimit,
-        },
-        controller.signal,
-      );
+      const response = await searchProducts(finalParams, controller.signal);
 
-      if (seq !== requestSeq) return;
+      if (requestId !== activeRequestId) {
+        return;
+      }
 
       cache.set(cacheKey, {
         data: response,
         timestamp: Date.now(),
       });
 
-      applySuccess(params, response.items, response.total, false);
+      setSuccessState(params.query, response.items, response.total, false);
     } catch (error) {
-      if (controller.signal.aborted) return;
-      if (seq !== requestSeq) return;
+      if (controller.signal.aborted) {
+        return;
+      }
 
-      applyError(
-        params,
-        error instanceof Error ? error.message : "Unknown error",
-      );
+      if (requestId !== activeRequestId) {
+        return;
+      }
+
+      const message =
+        error instanceof Error ? error.message : "Unexpected search error";
+
+      setErrorState(params.query, message);
     }
   }
 
-  function search(params: SearchParams) {
-    query.value = params.query;
+  function scheduleSearch(params?: Partial<SearchParams>) {
+    clearDebounceTimer();
 
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
+    const query = params?.query ?? inputValue.value;
+    const limit = params?.limit ?? defaultLimit;
 
     debounceTimer = setTimeout(() => {
-      void executeSearch(params);
+      void executeSearch({ query, limit });
     }, debounceMs);
   }
 
-  function clear() {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-      debounceTimer = null;
-    }
-
-    if (currentController) {
-      currentController.abort();
-      currentController = null;
-    }
-
-    requestSeq++;
-    state.value = createInitialSearchState<Product>();
-    query.value = "";
-  }
-
   function retry() {
-    if (!query.value.trim()) return;
-    void executeSearch({ query: query.value, limit: defaultLimit });
+    if (!executedQuery.value.trim()) return;
+    void executeSearch({
+      query: executedQuery.value,
+      limit: defaultLimit,
+    });
   }
+
+  function clear() {
+    clearDebounceTimer();
+    abortActiveRequest();
+    activeRequestId++;
+
+    inputValue.value = "";
+    state.value = createInitialSearchState<Product>();
+  }
+
+  function cleanup() {
+    clearDebounceTimer();
+    abortActiveRequest();
+    activeRequestId++;
+  }
+
+  onBeforeUnmount(() => {
+    cleanup();
+  });
 
   return {
+    inputValue,
+    executedQuery,
     state,
-    query,
-    hasResults,
     isLoading,
-    search,
-    clear,
+    hasResults,
+    scheduleSearch,
     retry,
+    clear,
+    cleanup,
   };
 }
