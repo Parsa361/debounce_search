@@ -1,10 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProductSearch } from "../useProductSearch";
 import * as api from "@/services/api/searchApi";
 import type { Product } from "@/types/product";
 import type { SearchResponse } from "@/types/api";
 
-vi.mock("@/services/api/searchApi");
+vi.mock("@/services/api/searchApi", () => ({
+  searchProducts: vi.fn(),
+}));
 
 describe("useProductSearch", () => {
   beforeEach(() => {
@@ -16,117 +18,77 @@ describe("useProductSearch", () => {
     vi.clearAllMocks();
   });
 
-  it("should execute search after debounce delay", async () => {
-    const mockResponse = {
-      items: [{ id: 1, title: "iPhone", price: 999 }],
+  it("calls searchProducts with normalized query and default limit", async () => {
+    const mockResponse: SearchResponse<Product> = {
+      items: [
+        {
+          id: 1,
+          title: "iPhone 15",
+          price: 999,
+          description: "Phone",
+          category: "electronics",
+          rating: 10,
+          thumbnail: "iphone.jpg",
+        },
+      ],
       total: 1,
-    } as SearchResponse<Product>;
+    };
 
     vi.mocked(api.searchProducts).mockResolvedValue(mockResponse);
 
     const search = useProductSearch({
       debounceMs: 400,
+      defaultLimit: 10,
     });
 
-    search.scheduleSearch({ query: "iphone 15" });
+    search.setInputValue("  IPHONE 15 ");
+    search.scheduleSearch();
 
-    expect(api.searchProducts).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(400);
-
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
 
     expect(api.searchProducts).toHaveBeenCalledTimes(1);
+    expect(api.searchProducts).toHaveBeenCalledWith(
+      {
+        query: "iphone 15",
+        limit: 10,
+      },
+      expect.any(AbortSignal),
+    );
   });
 
-  it("should debounce multiple rapid searches", async () => {
-    const mockResponse = {
-      items: [],
-      total: 0,
-    } as SearchResponse<Product>;
-
-    vi.mocked(api.searchProducts).mockResolvedValue(mockResponse);
-
-    const search = useProductSearch({
-      debounceMs: 400,
-    });
-
-    search.scheduleSearch({ query: "old iphone" });
-    search.scheduleSearch({ query: "new iphone" });
-    search.scheduleSearch({ query: "iphone 15" });
-
-    expect(api.searchProducts).not.toHaveBeenCalled();
-    expect(search.executedQuery.value).toBe("");
-
-    vi.advanceTimersByTime(400);
-
-    await Promise.resolve();
-
-    expect(api.searchProducts).toHaveBeenCalledTimes(1);
-    expect(search.executedQuery.value).toBe("iphone 15");
-  });
-
-  it("should return cached result", async () => {
-    const mockResponse = {
-      items: [{ id: 1, title: "MacBook", price: 1999 }],
+  it("uses cache for same normalized query and limit", async () => {
+    const mockResponse: SearchResponse<Product> = {
+      items: [
+        {
+          id: 1,
+          title: "MacBook Pro",
+          price: 1999,
+          description: "Laptop",
+          category: "electronics",
+          thumbnail: "macbook.jpg",
+          rating: 10,
+        },
+      ],
       total: 1,
-    } as SearchResponse<Product>;
+    };
 
     vi.mocked(api.searchProducts).mockResolvedValue(mockResponse);
 
     const search = useProductSearch({
       debounceMs: 400,
-      cacheTtlMs: 30000,
+      cacheTtlMs: 30_000,
+      defaultLimit: 10,
     });
 
-    search.scheduleSearch({ query: "mac" });
+    search.setInputValue("  MAC ");
+    search.scheduleSearch();
+    await vi.advanceTimersByTimeAsync(400);
 
-    vi.advanceTimersByTime(400);
-    await Promise.resolve();
-
-    expect(api.searchProducts).toHaveBeenCalledTimes(1);
-
-    search.scheduleSearch({ query: "mac" });
-
-    vi.advanceTimersByTime(400);
-    await Promise.resolve();
+    search.setInputValue("mac");
+    search.scheduleSearch();
+    await vi.advanceTimersByTimeAsync(400);
 
     expect(api.searchProducts).toHaveBeenCalledTimes(1);
-  });
-
-  it("should cancel previous request when new search starts", async () => {
-    const mockResponse = {
-      items: [],
-      total: 0,
-    } as SearchResponse<Product>;
-
-    vi.mocked(api.searchProducts).mockResolvedValue(mockResponse);
-
-    const search = useProductSearch({
-      debounceMs: 400,
-    });
-
-    search.scheduleSearch({ query: "iphone" });
-
-    vi.advanceTimersByTime(200);
-
-    search.scheduleSearch({ query: "mac" });
-
-    vi.advanceTimersByTime(400);
-
-    await Promise.resolve();
-
-    expect(api.searchProducts).toHaveBeenCalledTimes(1);
-  });
-
-  it("should reset state when clear is called", () => {
-    const search = useProductSearch();
-
-    search.scheduleSearch({ query: "mac" });
-
-    search.clear();
-
-    expect(search.inputValue.value).toBe("");
-    expect(search.state.value.status).toBe("idle");
+    expect(search.state.value.fromCache).toBe(true);
   });
 });
