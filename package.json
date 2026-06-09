@@ -33,7 +33,6 @@
     "typescript": "~6.0.0",
     "typescript-eslint": "^8.60.1",
     "vite": "^8.0.8",
-    "vite-plugin-vue-devtools": "^8.1.1",
     "vitest": "^4.1.7",
     "vue-tsc": "^3.2.6"
   },
