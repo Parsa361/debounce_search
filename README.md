@@ -4,6 +4,10 @@ A debounced async product search built with Vue 3, TypeScript, Vite, and Vitest.
 
 This project demonstrates a production-minded approach to frontend async workflows, including request cancellation, caching, race condition protection, and reusable composable architecture.
 
+## Live Demo
+
+https://lovely-profiterole-3c2558.netlify.app/
+
 ## Features
 
 - Debounced search input
